@@ -1,0 +1,11 @@
+{
+	"id": "hi-note",
+	"name": "HiNote (Minimal)",
+	"version": "0.5.5-minimal.1",
+	"minAppVersion": "1.8.0",
+	"description": "Local-first highlights, comments, and exports without AI or flashcards.",
+	"author": "Kai",
+	"authorUrl": "https://github.com/CatMuse",
+	"fundingUrl": "https://ko-fi.com/catmuse",
+	"isDesktopOnly": false
+}

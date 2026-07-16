@@ -1,0 +1,193 @@
+import { Setting, Notice } from 'obsidian';
+import { t } from '../i18n';
+import { RegexRuleEditor } from './RegexRuleEditor';
+
+export class GeneralSettingsTab {
+    private plugin: any;
+    private containerEl: HTMLElement;
+
+    constructor(plugin: any, containerEl: HTMLElement) {
+        this.plugin = plugin;
+        this.containerEl = containerEl;
+    }
+    
+    /**
+     * 添加样式
+     */
+    // 样式已移动到全局 styles.css 文件中
+    
+    /**
+     * 更新孤立数据计数
+     */
+    private async updateOrphanedDataCount(descEl: HTMLElement) {
+        try {
+            // 移除现有的计数元素
+            const existingCount = descEl.querySelector('.orphaned-data-count, .no-orphaned-data');
+            if (existingCount) {
+                existingCount.remove();
+            }
+            
+            // 获取孤立数据数量
+            const stats = await this.plugin.highlightManager.checkOrphanedDataCount();
+            
+            // 创建新的计数元素
+            const countEl = document.createElement('div');
+            
+            if (stats.orphanedHighlights > 0) {
+                countEl.className = 'orphaned-data-count';
+                countEl.textContent = `Found ${stats.orphanedHighlights} orphaned highlights in ${stats.affectedFiles} files.`;
+            } else {
+                countEl.className = 'no-orphaned-data';
+                countEl.textContent = 'No orphaned data found.';
+            }
+            
+            // 添加到描述元素
+            descEl.appendChild(countEl);
+        } catch (error) {
+            console.error('[HiNote] Error updating orphaned data count:', error);
+        }
+    }
+
+    display(): void {
+        const container = this.containerEl.createEl('div', {
+            cls: 'general-settings-container'
+        });
+        
+        // 样式已移动到全局 styles.css 文件中
+
+        // 排除设置
+        new Setting(container)
+            .setName(t('Exclusions'))
+            .setDesc(t('Comma separated list of paths, tags, note titles or file extensions that will be excluded from highlighting. e.g. folder1, folder1/folder2, [[note1]], [[note2]], *.excalidraw.md'))
+            .addTextArea(text => {
+                text
+                    .setPlaceholder('folder1, folder1/folder2, [[note1]], [[note2]], *.excalidraw.md')
+                    .setValue(this.plugin.settings.excludePatterns || '')
+                    .onChange(async (value) => {
+                        // 将输入的文本分割成数组并处理
+                        const patterns = value
+                            .split(',')
+                            .map(pattern => pattern.trim())
+                            .filter(pattern => pattern.length > 0);
+                        
+                        this.plugin.settings.excludePatterns = value;
+                        await this.plugin.saveSettings();
+                    });
+                    
+                text.inputEl.rows = 4;
+                text.inputEl.cols = 40;
+            });
+
+        // Widget显示设置
+        new Setting(container)
+            .setName(t('Show Comment Widget'))
+            .setDesc(t('Show or hide the comment widget next to highlights. Disabling this can reduce visual clutter while reading.'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.showCommentWidget ?? true)
+                .onChange(async (value) => {
+                    this.plugin.settings.showCommentWidget = value;
+                    await this.plugin.saveSettings();
+                    // 刷新高亮装饰器以立即应用更改
+                    if (this.plugin.highlightDecorator) {
+                        this.plugin.highlightDecorator.refreshDecorations();
+                    }
+                }));
+
+        // 高亮提取设置组
+        new Setting(container)
+            .setName(t('Custom text extraction'))
+            .setHeading();
+
+        // 启用自定义正则表达式的开关
+        new Setting(container)
+            .setName(t('Use custom rules'))
+            .setDesc(t('Enable to use custom regex rules to extract highlight text.'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.useCustomPattern)
+                .onChange(async (value) => {
+                    this.plugin.settings.useCustomPattern = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        // 添加正则表达式规则编辑器
+        const regexEditorContainer = container.createDiv({ cls: 'regex-editor-container' });
+        new RegexRuleEditor(regexEditorContainer, this.plugin);
+                
+        // 数据管理设置组
+        new Setting(container)
+            .setName(t('Data management'))
+            .setHeading();
+            
+        // 检查/清理孤立数据按钮
+        const orphanedDataSetting = new Setting(container)
+            .setName(t('Clean orphaned data'))
+            .setDesc(t('Remove highlights and comments that no longer exist in your documents. This is useful if you have deleted highlights but their comments are still stored in the data file.'));
+
+        let orphanedCount = 0;
+        let affectedFiles = 0;
+        let isChecked = false;
+        const checkButton = orphanedDataSetting.addButton(button => {
+            button.setButtonText(t('Check'));
+            button.onClick(async () => {
+                button.setButtonText(t('Checking...'));
+                button.setDisabled(true);
+                try {
+                    // 检查孤立数据数量
+                    const stats = await this.plugin.highlightManager.checkOrphanedDataCount();
+                    orphanedCount = stats.orphanedHighlights;
+                    affectedFiles = stats.affectedFiles;
+                    isChecked = true;
+
+                    // 更新描述
+                    const descEl = orphanedDataSetting.descEl;
+                    // 移除现有的计数元素
+                    const existingCount = descEl.querySelector('.orphaned-data-count, .no-orphaned-data');
+                    if (existingCount) existingCount.remove();
+                    const countEl = document.createElement('div');
+                    if (orphanedCount > 0) {
+                        countEl.className = 'orphaned-data-count';
+                        countEl.textContent = `Found ${orphanedCount} orphaned highlights in ${affectedFiles} files.`;
+                        button.setButtonText(t('Clean data'));
+                        button.setDisabled(false);
+                        // 改为清理模式
+                        button.onClick(async () => {
+                            button.setButtonText(t('Cleaning...'));
+                            button.setDisabled(true);
+                            try {
+                                const result = await this.plugin.highlightManager.cleanOrphanedData();
+                                if (result.removedHighlights > 0) {
+                                    new Notice(`Cleaned ${result.removedHighlights} orphaned highlights from ${result.affectedFiles} files.`);
+                                } else {
+                                    new Notice('No orphaned data found.');
+                                }
+                                // 清理后重置按钮和描述
+                                button.setButtonText(t('Check'));
+                                isChecked = false;
+                                // 移除计数元素
+                                if (countEl && countEl.parentElement) countEl.parentElement.removeChild(countEl);
+                            } catch (error) {
+                                console.error('[HiNote] Error cleaning orphaned data:', error);
+                                new Notice('Error cleaning orphaned data. Check console for details.');
+                                button.setButtonText(t('Check'));
+                            } finally {
+                                button.setDisabled(false);
+                            }
+                        });
+                    } else {
+                        countEl.className = 'no-orphaned-data';
+                        countEl.textContent = 'No orphaned data found.';
+                        button.setButtonText(t('Check'));
+                        button.setDisabled(false);
+                    }
+                    descEl.appendChild(countEl);
+                } catch (error) {
+                    console.error('[HiNote] Error checking orphaned data:', error);
+                    new Notice('Error checking orphaned data. Check console for details.');
+                    button.setButtonText(t('Check'));
+                    button.setDisabled(false);
+                }
+            });
+        });
+
+    }
+}
