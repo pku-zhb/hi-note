@@ -6,8 +6,7 @@ import { HighlightInfo as HiNote } from "../../types";
  * 事件回调接口
  */
 export interface EventCallbacks {
-    onFileOpen?: (file: TFile, isInCanvas: boolean) => void;
-    onFileModify?: (file: TFile, isInCanvas: boolean) => void;
+    onFileModify?: (file: TFile) => void;
     onFileCreate?: () => void;
     onFileDelete?: () => void;
     onLayoutChange?: () => void;
@@ -42,15 +41,9 @@ export class EventCoordinator {
     /**
      * 注册所有事件监听器
      */
-    registerAllEvents(
-        getCurrentFile: () => TFile | null,
-        isDraggedToMainView: () => boolean
-    ): void {
-        // 监听文档切换
-        this.registerFileOpenEvent(getCurrentFile, isDraggedToMainView);
-
+    registerAllEvents(getCurrentFile: () => TFile | null): void {
         // 监听文档修改
-        this.registerFileModifyEvent(getCurrentFile, isDraggedToMainView);
+        this.registerFileModifyEvent(getCurrentFile);
 
         // 监听文件创建和删除
         this.registerFileCreateEvent();
@@ -64,47 +57,15 @@ export class EventCoordinator {
     }
 
     /**
-     * 注册文件打开事件
-     */
-    private registerFileOpenEvent(
-        getCurrentFile: () => TFile | null,
-        isDraggedToMainView: () => boolean
-    ): void {
-        const ref = this.app.workspace.on('file-open', (file) => {
-            // 只在非主视图时同步文件
-            if (file && !isDraggedToMainView()) {
-                const activeLeaf = this.app.workspace.activeLeaf;
-                const isInCanvas = activeLeaf?.getViewState()?.state?.file !== file.path && 
-                                  activeLeaf?.view?.getViewType() === 'canvas';
-                
-                if (this.callbacks.onFileOpen) {
-                    this.callbacks.onFileOpen(file, isInCanvas);
-                }
-            }
-        });
-        
-        this.component.registerEvent(ref);
-        this.eventRefs.push(ref);
-    }
-
-    /**
      * 注册文件修改事件
      */
-    private registerFileModifyEvent(
-        getCurrentFile: () => TFile | null,
-        isDraggedToMainView: () => boolean
-    ): void {
+    private registerFileModifyEvent(getCurrentFile: () => TFile | null): void {
         const ref = this.app.vault.on('modify', (file) => {
             const currentFile = getCurrentFile();
             
-            // 只在非主视图时同步文件
-            if (file === currentFile && !isDraggedToMainView() && file instanceof TFile) {
-                const activeLeaf = this.app.workspace.activeLeaf;
-                const isInCanvas = activeLeaf?.getViewState()?.state?.file !== file.path && 
-                                  activeLeaf?.view?.getViewType() === 'canvas';
-                
+            if (file === currentFile && file instanceof TFile) {
                 if (this.callbacks.onFileModify) {
-                    this.callbacks.onFileModify(file, isInCanvas);
+                    this.callbacks.onFileModify(file);
                 }
             }
         });

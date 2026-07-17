@@ -40,9 +40,6 @@ export const VIEW_TYPE_HINOTE = "hinote-view";
  */
 export class HiNoteView extends ItemView {
     // === 常量定义 ===
-    private static readonly CANVAS_UPDATE_DELAY = 10; // Canvas 更新延迟（毫秒）
-    private static readonly COMMENT_INPUT_DELAY = 100; // 评论输入延迟（毫秒）
-
     // === 视图状态（集中管理） ===
     private state = new ViewState();
 
@@ -76,6 +73,9 @@ export class HiNoteView extends ItemView {
     private uiInitializer: UIInitializer | null = null;
     private eventCoordinator: EventCoordinator | null = null;
     private callbackConfigurator: CallbackConfigurator | null = null;
+    private unsubscribeCursorDocument: (() => void) | null = null;
+    private pendingCursorDocument: TFile | null = null;
+    private cursorDocumentSync: Promise<void> | null = null;
 
     // === UI 元素（在 onOpen 中初始化）===
     private highlightContainer!: HTMLElement;
@@ -114,15 +114,11 @@ export class HiNoteView extends ItemView {
         
         // 使用 EventCoordinator 注册所有事件
         this.eventCoordinator.setCallbacks({
-            onFileOpen: (file, isInCanvas) => {
-                this.state.currentFile = file;
-                this.updateHighlights(isInCanvas);
-            },
-            onFileModify: (file, isInCanvas) => {
+            onFileModify: () => {
                 if (this.fileListManager) {
                     this.fileListManager.invalidateCache();
                 }
-                this.updateHighlights(isInCanvas);
+                this.updateHighlights();
             },
             onFileCreate: () => {
                 if (this.fileListManager) {
@@ -147,10 +143,7 @@ export class HiNoteView extends ItemView {
             }
         });
         
-        this.eventCoordinator.registerAllEvents(
-            () => this.state.currentFile,
-            () => this.state.isDraggedToMainView
-        );
+        this.eventCoordinator.registerAllEvents(() => this.state.currentFile);
     }
 
     getViewType(): string {
@@ -509,60 +502,12 @@ export class HiNoteView extends ItemView {
         }
         
         this.viewPositionDetector.setCallbacks({
-            onPositionChange: async (isInMainView, wasInAllHighlightsView) => {
+            onPositionChange: async (isInMainView) => {
                 this.state.isDraggedToMainView = isInMainView;
-                
-                if (isInMainView) {
-                    // 拖拽到主视图（使用 DeviceManager）
-                    const deviceInfo = this.deviceManager!.getDeviceInfo();
-                    if (deviceInfo.isMobile && deviceInfo.isSmallScreen) {
-                        this.state.isShowingFileList = true;
-                    }
-                    
-                    const activeFile = this.app.workspace.getActiveFile();
-                    if (activeFile) {
-                        this.state.currentFile = activeFile;
-                        await this.updateHighlights();
-                    } else {
-                        this.state.currentFile = null;
-                        await this.updateAllHighlights();
-                    }
-                    
-                    if (this.fileListManager) {
-                        this.fileListManager.updateState({
-                            currentFile: this.state.currentFile
-                        });
-                        this.fileListManager.updateFileListSelection();
-                    }
-                } else {
-                    // 切换到侧边栏
-                    const activeFile = this.app.workspace.getActiveFile();
-                    if (activeFile) {
-                        if (wasInAllHighlightsView) {
-                            this.state.currentFile = activeFile;
-                            this.highlightContainer.empty();
-                            this.highlightContainer.appendChild(this.loadingIndicator);
-                            setTimeout(() => {
-                                this.updateHighlights();
-                            }, HiNoteView.CANVAS_UPDATE_DELAY);
-                        } else {
-                            this.state.currentFile = activeFile;
-                            this.updateHighlights();
-                        }
-                    } else {
-                        this.state.highlights = [];
-                        this.renderHighlights([]);
-                    }
-                }
-                
-                // 更新布局
-                if (this.layoutManager) {
-                    this.layoutManager.updateState({
-                        isDraggedToMainView: this.state.isDraggedToMainView,
-                        isShowingFileList: this.state.isShowingFileList
-                    });
-                    await this.layoutManager.updateViewLayout();
-                }
+
+                // Docking only changes the container location. Data, layout and
+                // card interactions always retain sidebar semantics.
+                await this.updateViewLayout();
                 
                 // 触发搜索更新
                 if (this.searchInput && this.searchInput.value.trim() !== '') {
@@ -583,11 +528,14 @@ export class HiNoteView extends ItemView {
             this.infiniteScrollManager.setLoadingIndicator(this.loadingIndicator);
         }
 
-        // 初始化当前文件
-        const activeFile = this.app.workspace.getActiveFile();
-        if (activeFile) {
-            this.state.currentFile = activeFile;
-            await this.updateHighlights();
+        // Bind every HiNote placement to the one Markdown document that most
+        // recently owned the real editor cursor.
+        this.unsubscribeCursorDocument = this.plugin.cursorDocumentTracker.subscribe(
+            (file) => void this.syncCursorDocument(file)
+        );
+        const cursorFile = this.plugin.cursorDocumentTracker.getCurrentFile();
+        if (cursorFile) {
+            await this.syncCursorDocument(cursorFile);
         }
 
         // 更新视图布局
@@ -623,7 +571,7 @@ export class HiNoteView extends ItemView {
         if (this.highlightRenderManager) {
             this.highlightRenderManager.updateState({
                 currentFile: this.state.currentFile,
-                isDraggedToMainView: this.state.isDraggedToMainView,
+                isDraggedToMainView: false,
                 currentBatch: this.infiniteScrollManager?.getCurrentBatch() || 0
             });
             this.highlightRenderManager.renderHighlights(
@@ -643,11 +591,6 @@ export class HiNoteView extends ItemView {
     // 评论操作方法已移至 CommentOperationManager 和 CommentInputManager
 
     private async jumpToHighlight(highlight: HighlightInfo) {
-        if (this.state.isDraggedToMainView) {
-            // 如果在视图中，则不执行转
-            return;
-        }
-
         // 如果是全局搜索结果，静默禁止跳转
         if (highlight.isGlobalSearch) {
             return;
@@ -685,8 +628,8 @@ export class HiNoteView extends ItemView {
     private async updateViewLayout() {
         if (this.layoutManager) {
             this.layoutManager.updateState({
-                isDraggedToMainView: this.state.isDraggedToMainView,
-                isShowingFileList: this.state.isShowingFileList
+                isDraggedToMainView: false,
+                isShowingFileList: false
             });
             await this.layoutManager.updateViewLayout();
             
@@ -777,6 +720,10 @@ export class HiNoteView extends ItemView {
 
     // 在 onunload 方法中确保清理
     onunload() {
+        this.unsubscribeCursorDocument?.();
+        this.unsubscribeCursorDocument = null;
+        this.pendingCursorDocument = null;
+
         // 清理有 destroy 方法的管理器
         this.searchUIManager?.destroy();
         this.selectionManager?.destroy();
@@ -803,6 +750,40 @@ export class HiNoteView extends ItemView {
     // 添加新方法来判断是否在全部高亮视图
     private isInAllHighlightsView(): boolean {
         return this.state.currentFile === null;
+    }
+
+    private syncCursorDocument(file: TFile): Promise<void> {
+        if (file.extension !== 'md') return Promise.resolve();
+
+        // Collapse rapid editor switches to the newest document while keeping
+        // refreshes serialized, so a slower old file cannot win the render race.
+        this.pendingCursorDocument = file;
+        if (!this.cursorDocumentSync) {
+            this.cursorDocumentSync = this.drainCursorDocumentChanges()
+                .finally(() => {
+                    this.cursorDocumentSync = null;
+                    if (this.pendingCursorDocument) {
+                        void this.syncCursorDocument(this.pendingCursorDocument);
+                    }
+                });
+        }
+
+        return this.cursorDocumentSync;
+    }
+
+    private async drainCursorDocumentChanges(): Promise<void> {
+        while (this.pendingCursorDocument) {
+            const file = this.pendingCursorDocument;
+            this.pendingCursorDocument = null;
+
+            this.state.currentFile = file;
+            if (this.fileListManager) {
+                this.fileListManager.updateState({ currentFile: file });
+                this.fileListManager.updateFileListSelection();
+            }
+
+            await this.updateHighlights();
+        }
     }
     
     // 添加方法来更新高亮列表显示（搜索筛选）

@@ -5,11 +5,13 @@ import { PluginSettings, DEFAULT_SETTINGS } from './src/types';
 import { registerCommands, createWindowManager } from './src/commands';
 import { InitializationManager } from './src/services/InitializationManager';
 import { WindowManager } from './src/services/WindowManager';
+import { CursorDocumentTracker } from './src/services/CursorDocumentTracker';
 
 export default class CommentPlugin extends Plugin {
 	settings: PluginSettings;
 	private initManager: InitializationManager;
 	private windowManager: WindowManager;
+	readonly cursorDocumentTracker = new CursorDocumentTracker(this);
 
 	// 公开服务实例供外部访问
 	get highlightDecorator() { return this.initManager.highlightDecorator; }
@@ -33,6 +35,7 @@ export default class CommentPlugin extends Plugin {
 			...retainedData
 		} = loadedData;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, retainedData);
+		this.cursorDocumentTracker.start();
 
 		// 清除旧版遗留的模型配置和 API 凭据，同时保留其他插件数据。
 		if ('ai' in loadedData || 'contextOptions' in loadedData || 'flashcard-license' in loadedData || 'export' in loadedData) {
@@ -80,6 +83,8 @@ export default class CommentPlugin extends Plugin {
 
 
 	async onunload() {
+		this.cursorDocumentTracker.clear();
+
 		// 清理初始化管理器
 		if (this.initManager) {
 			await this.initManager.cleanup();
